@@ -1,38 +1,61 @@
 from flask import Flask, request, jsonify
 import boto3
 import os
+import pymysql
 
 app = Flask(__name__)
 
-# S3 client
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-    aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-    region_name='ap-south-1'
-)
-
+# S3 client (IAM Role se chalega)
+s3 = boto3.client('s3', region_name='ap-south-1')
 BUCKET = os.environ.get('AWS_BUCKET_NAME')
+
+# RDS connection
+def get_db():
+    return pymysql.connect(
+        host='flask-db.cbwuuma4aliy.ap-south-1.rds.amazonaws.com',
+        user='admin',
+        password='Vivek1234!',
+        database='flaskdb',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+# Database initialize karo
+def init_db():
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE DATABASE IF NOT EXISTS flaskdb
+        ''')
+        conn.select_db('flaskdb')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100),
+                email VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print("DB initialized!")
+    except Exception as e:
+        print(f"DB Error: {e}")
 
 @app.route('/')
 def home():
-    return 'Hello from AWS EC2 with S3!'
+    return 'Flask + S3 + RDS on AWS!'
 
 @app.route('/health')
 def health():
     return 'Server is running on AWS!'
 
-@app.route('/predict')
-def predict():
-    return {'model': 'BERT', 'status': 'running', 'accuracy': '94%'}
-
+# S3 endpoints
 @app.route('/upload', methods=['POST'])
 def upload():
     if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
+        return jsonify({'error': 'No file'}), 400
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'Empty filename'}), 400
     try:
         s3.upload_fileobj(file, BUCKET, file.filename)
         url = f"https://{BUCKET}.s3.ap-south-1.amazonaws.com/{file.filename}"
@@ -49,5 +72,36 @@ def files():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# RDS endpoints
+@app.route('/users', methods=['POST'])
+def add_user():
+    data = request.get_json()
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO users (name, email) VALUES (%s, %s)',
+            (data['name'], data['email'])
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'User added!'}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/users', methods=['GET'])
+def get_users():
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users')
+        users = cursor.fetchall()
+        conn.close()
+        return jsonify({'users': users}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
+    init_db()
     app.run(host='0.0.0.0', port=5000)
+
